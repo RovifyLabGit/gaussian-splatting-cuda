@@ -12,7 +12,10 @@
 #include <tinyply.h>
 #include <unordered_map>
 #include <vector>
-
+#include <rapidcsv.h>
+#include <string>
+#include <exception> 
+#include <stdexcept>
 std::unordered_map<int, std::pair<CAMERA_MODEL, uint32_t>> camera_model_ids = {
     {0, {CAMERA_MODEL::SIMPLE_PINHOLE, 3}},
     {1, {CAMERA_MODEL::PINHOLE, 4}},
@@ -322,10 +325,108 @@ PointCloud read_point3D_binary(std::filesystem::path file_path) {
     return point_cloud;
 }
 
+std::vector<CameraInfo> read_colmap_cameras_form_CSV(std::filesystem::path filePath,int resolution) 
+{
+    int countOfCameras;
+    std::vector<CameraInfo> camera_infos(countOfCameras);
+
+ 
+    rapidcsv::Document cameraDoc(filePath.parent_path() / "sparse/0/cameras.csv");
+    
+    for (int j=0; j < cameraDoc.GetRowCount(); j++)
+    {
+        CameraInfo cameraInfo;
+
+
+        cameraInfo._image_name = cameraDoc.GetCell<std::string>(7,j);
+        float qx,qy,qz,qw;
+        qx = cameraDoc.GetCell<float>(0,j);
+        qy = cameraDoc.GetCell<float>(1,j);
+        qz = cameraDoc.GetCell<float>(2,j);
+        qw = cameraDoc.GetCell<float>(3,j);
+
+        auto [img_data, width, height, channels] = read_image(filePath / cameraInfo._image_name , resolution);
+        cameraInfo._img_w = width;
+        cameraInfo._img_h = height;
+        cameraInfo._channels = channels;
+        cameraInfo._img_data = img_data;
+        Eigen::Quaternionf quat(qx,qy,qz,qw);
+
+        cameraInfo._R = qvec2rotmat(quat).transpose();
+
+        float x,y,z;
+        x = cameraDoc.GetCell<float>(4,j);
+        y = cameraDoc.GetCell<float>(5,j);
+        z = cameraDoc.GetCell<float>(6,j);
+
+        cameraInfo._T = Eigen::Vector3f(x,y,z);
+
+        cameraInfo._image_path = filePath / cameraInfo._image_name ;
+        int camid = cameraDoc.GetCell<int>(8,j);
+        cameraInfo._camera_model = std::get<0>(camera_model_ids[camid]);cameraInfo._width = cameraDoc.GetCell<float>(9,j);
+  
+        cameraInfo._width = cameraDoc.GetCell<float>(9,j);
+        cameraInfo._height = cameraDoc.GetCell<float>(10,j);
+        auto cameraParamCount = std::get<1>(camera_model_ids[camid]);
+        //cameraInfo._params.resize(cameraParamCount);
+
+        for (int i =1; i <= 2; i++)
+        {
+            auto value  = cameraDoc.GetCell<float>(10+i,j);
+            cameraInfo._params.emplace_back(value);
+        }
+
+   
+        switch (cameraInfo._camera_model) 
+        {
+            case CAMERA_MODEL::SIMPLE_PINHOLE: {
+                const float focal_length_x = cameraInfo._params[0];
+                cameraInfo._camera_ID = focal2fov(focal_length_x, cameraInfo._width);
+                cameraInfo._fov_y = focal2fov(focal_length_x, cameraInfo._height);
+
+            } break;
+            case CAMERA_MODEL::PINHOLE: {
+                const float focal_length_x = cameraInfo._params[0];
+                const float focal_length_y = cameraInfo._params[1];
+                cameraInfo._fov_x = focal2fov(focal_length_x, cameraInfo._width);
+                cameraInfo._fov_y = focal2fov(focal_length_y, cameraInfo._height);
+            } break;
+            case CAMERA_MODEL::SIMPLE_RADIAL:
+                throw std::runtime_error("Camera model SIMPLE_RADIAL not supported");
+            case CAMERA_MODEL::RADIAL:
+                throw std::runtime_error("Camera model RADIAL not supported");
+            case CAMERA_MODEL::OPENCV:
+                throw std::runtime_error("Camera model OPENCV not supported");
+            case CAMERA_MODEL::OPENCV_FISHEYE:
+                throw std::runtime_error("Camera model OPENCV_FISHEYE not supported");
+            case CAMERA_MODEL::FULL_OPENCV:
+                throw std::runtime_error("Camera model FULL_OPENCV not supported");
+            case CAMERA_MODEL::FOV:
+                throw std::runtime_error("Camera model FOV not supported");
+            case CAMERA_MODEL::SIMPLE_RADIAL_FISHEYE:
+                throw std::runtime_error("Camera model SIMPLE_RADIAL_FISHEYE not supported");
+            case CAMERA_MODEL::RADIAL_FISHEYE:
+                throw std::runtime_error("Camera model RADIAL_FISHEYE not supported");
+            case CAMERA_MODEL::THIN_PRISM_FISHEYE:
+                throw std::runtime_error("Camera model THIN_PRISM_FISHEYE not supported");
+            case CAMERA_MODEL::UNDEFINED:
+                throw std::runtime_error("Camera model UNDEFINED (and thus not supported)");
+            default:
+                // in case there is something new
+                throw std::runtime_error("Camera model not supported");
+        }
+        camera_infos.emplace_back(cameraInfo);
+    }
+
+
+    return camera_infos;
+}
+
 std::vector<CameraInfo> read_colmap_cameras(const std::filesystem::path file_path,
                                             const std::unordered_map<uint32_t, CameraInfo>& cameras,
                                             const std::vector<Image>& images,
-                                            int resolution) {
+                                            int resolution) 
+{
     std::vector<CameraInfo> camera_infos(images.size());
     std::vector<uint32_t> keys(camera_infos.size());
     std::generate(keys.begin(), keys.end(), [n = 0]() mutable { return n++; });
@@ -432,9 +533,9 @@ std::pair<Eigen::Vector3f, float> getNerfppNorm(std::vector<CameraInfo>& cam_inf
     return {translate, radius};
 }
 
-std::unique_ptr<SceneInfo> read_colmap_scene_info(std::filesystem::path file_path, int resolution) {
-    auto cameras = read_cameras_binary(file_path / "sparse/0/cameras.bin");
-    auto images = read_images_binary(file_path / "sparse/0/images.bin");
+std::unique_ptr<SceneInfo> read_colmap_scene_info(std::filesystem::path file_path, int resolution) 
+{
+
 
     auto sceneInfos = std::make_unique<SceneInfo>();
     if (!std::filesystem::exists(file_path / "sparse/0/points3D.ply")) {
@@ -443,7 +544,59 @@ std::unique_ptr<SceneInfo> read_colmap_scene_info(std::filesystem::path file_pat
         sceneInfos->_point_cloud = read_ply_file(file_path / "sparse/0/points3D.ply");
     }
     sceneInfos->_ply_path = file_path / "sparse/0/points3D.ply";
-    sceneInfos->_cameras = read_colmap_cameras(file_path / "images", cameras, images, resolution);
+
+    std::vector<Image> images;
+    if(std::filesystem::exists(file_path / "sparse/0/cameras.csv")) 
+    {
+        std::cout << "Ues CSV file" << std::endl; 
+        sceneInfos->_cameras = read_colmap_cameras_form_CSV(file_path / "images", resolution);
+    }
+    else
+    {    
+        auto cameras = read_cameras_binary(file_path / "sparse/0/cameras.bin");
+        images = read_images_binary(file_path / "sparse/0/images.bin");
+        sceneInfos->_cameras = read_colmap_cameras(file_path / "images", cameras, images, resolution); // delet later
+    }
+
+   
+    std::string filename = "example.csv";
+
+    /*
+    std::ofstream csvFile(filename);
+    csvFile << "rotation x,rotation y,rotation z,rotation w,x,y,z,image name,camera model,width,height,focal length x,focal length y,additional data 1,additional data 2\n";
+    int i =0;
+    for (auto cam : sceneInfos->_cameras)
+    {
+        csvFile << cam._image_name <<",";
+        csvFile << cam._camera_ID <<",";
+        csvFile << static_cast<int>(cam._camera_model)<<",";
+        csvFile << cam._channels <<",";
+        csvFile << cam._fov_x <<",";
+        csvFile << cam._fov_y <<",";
+        csvFile << cam._height <<",";
+        csvFile << cam._image_path <<",";
+        csvFile << cam._img_h <<",";
+        csvFile << cam._img_w <<",";
+        csvFile << cam._R(0,0) <<",";
+        csvFile << cam._R(0,1) <<",";
+        csvFile << cam._R(0,2) <<",";
+        csvFile << cam._R(1,0) <<",";
+        csvFile << cam._R(1,1) <<",";
+        csvFile << cam._R(1,2) <<",";
+        csvFile << cam._R(3,0) <<",";
+        csvFile << cam._R(3,1) <<",";
+        csvFile << cam._R(3,2) <<",";
+        csvFile << cam._T.x() <<",";
+        csvFile << cam._T.y() <<",";
+        csvFile << cam._T.z() <<",";
+        csvFile << cam._width <<",";
+        csvFile << "\n";
+        i++; 
+    }
+    // Close the CSV file
+    csvFile.close();
+    */
+
 
     auto& cam0 = sceneInfos->_cameras[0];
     auto ncams = sceneInfos->_cameras.size();

@@ -29,7 +29,7 @@ Scene::Scene(GaussianModel& gaussians, const gs::param::ModelParameters& params)
     }
     dump_JSON(params.output_path / "cameras.json", json_cams);
     // TODO: json camera dumping for debugging purpose at least
-
+    
     // get the parameterr self.cameras.extent
     _gaussians.Create_from_pcd(_scene_infos->_point_cloud, _scene_infos->_nerf_norm_radius);
 }
